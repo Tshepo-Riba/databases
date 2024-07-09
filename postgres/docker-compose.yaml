@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  postgres-master:
+    image: postgres:latest
+    environment:
+      POSTGRES_DB: ${PG_DB}
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      PG_REPLICATION_USER: ${PG_REPLICATION_USER}
+      PG_REPLICATION_PASSWORD: ${PG_REPLICATION_PASSWORD}
+    volumes:
+      - pg_master_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    command: >
+      bash -c "psql -U $PG_USER -d $PG_DB -f /docker-entrypoint-initdb.d/00_init.sql"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $PG_USER -d $PG_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-replica:
+    image: postgres:latest
+    environment:
+      POSTGRES_DB: ${PG_DB}
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      PG_REPLICATION_USER: ${PG_REPLICATION_USER}
+      PG_REPLICATION_PASSWORD: ${PG_REPLICATION_PASSWORD}
+    volumes:
+      - pg_replica_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    depends_on:
+      - postgres-master
+    command: >
+      bash -c "
+        until pg_isready -h postgres-master -U $PG_USER -d $PG_USER; do
+          echo 'Waiting for master to be ready...'
+          sleep 5
+        done;
+        PGPASSWORD=$PG_PASSWORD pg_basebackup -h postgres-master -D /var/lib/postgresql/data -U $PG_REPLICATION_USER -v -P --wal-method=stream;
+        echo \"host replication $PG_REPLICATION_USER all md5\" >> /var/lib/postgresql/data/pg_hba.conf;
+        echo \"primary_conninfo = 'host=postgres-master port=5432 user=$PG_REPLICATION_USER password=$PG_REPLICATION_PASSWORD'\" >> /var/lib/postgresql/data/postgresql.conf;
+        echo \"standby_mode = 'on'\" >> /var/lib/postgresql/data/recovery.conf;
+        pg_ctl start -D /var/lib/postgresql/data -w
+      "
+
+volumes:
+  pg_master_data:
+  pg_replica_data:
